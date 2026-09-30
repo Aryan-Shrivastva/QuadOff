@@ -1,0 +1,10 @@
+{
+  "id": "cloud-zone3-followup",
+  "title": "Team follow-up: repeat Zone 3 sample",
+  "text": "The central team requests one duplicate sample at River Zone 3 after rainfall before publishing any interpretation.",
+  "site_id": "river-zone-3",
+  "source": "Central Qdrant shared knowledge",
+  "verified_status": "verified",
+  "sync_state": "synced",
+  "version": 1
+}

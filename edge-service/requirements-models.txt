@@ -1,0 +1,6 @@
+# Optional local model runtime. Keep these separate from the edge service so
+# the offline demo remains small and deterministic by default.
+torch>=2.4,<3
+transformers>=5.0,<6
+sentence-transformers>=5.0,<6
+huggingface-hub>=0.30,<2

@@ -1,0 +1,52 @@
+[
+  {
+    "id": "finding-zone3-rainfall",
+    "title": "Post-rainfall low oxygen pattern",
+    "text": "River Zone 3 had dissolved oxygen below the project review band in two post-rainfall samples (4.2 and 4.8 mg/L). Treat this as a pattern to verify, not a contamination diagnosis.",
+    "site_id": "river-zone-3",
+    "source": "USGS/EPA curated demo pack",
+    "verified_status": "verified",
+    "sync_state": "synced",
+    "version": 3
+  },
+  {
+    "id": "finding-zone3-turbidity",
+    "title": "Turbidity spike after rainfall",
+    "text": "Turbidity reached 15.0 and 18.4 NTU in the same River Zone 3 sampling window. Compare with upstream readings and collect a duplicate sample.",
+    "site_id": "river-zone-3",
+    "source": "USGS/EPA curated demo pack",
+    "verified_status": "verified",
+    "sync_state": "synced",
+    "version": 2
+  },
+  {
+    "id": "finding-zone2-reference",
+    "title": "Upstream reference remained in range",
+    "text": "River Zone 2 remained inside the project review bands on the nearest comparable date, making it a useful reference for Zone 3 follow-up.",
+    "site_id": "river-zone-2",
+    "source": "USGS/EPA curated demo pack",
+    "verified_status": "verified",
+    "sync_state": "synced",
+    "version": 1
+  },
+  {
+    "id": "finding-calibration",
+    "title": "Calibration metadata changes confidence",
+    "text": "An unusual reading without a calibration timestamp should remain local until a duplicate or second instrument confirms it.",
+    "site_id": "all",
+    "source": "Field methods procedure",
+    "verified_status": "verified",
+    "sync_state": "synced",
+    "version": 2
+  },
+  {
+    "id": "finding-demo-conflict",
+    "title": "Conflict fixture: Zone 3 baseline",
+    "text": "The shared team record says the Zone 3 baseline was last reviewed on 12 August. This device has a local correction saying the review happened on 14 August; choose which version to keep.",
+    "site_id": "river-zone-3",
+    "source": "Demo-created conflict fixture",
+    "verified_status": "needs-review",
+    "sync_state": "conflict",
+    "version": 4
+  }
+]

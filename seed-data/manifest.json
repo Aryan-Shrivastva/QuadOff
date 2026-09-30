@@ -1,0 +1,11 @@
+{
+  "project_id": "clearwater-2026",
+  "title": "Clearwater River Zone 3 FieldNote demo pack",
+  "purpose": "Small, reproducible offline-first environmental research fixture",
+  "source_attribution": [
+    {"name": "USGS Water Data APIs", "url": "https://api.waterdata.usgs.gov/docs/"},
+    {"name": "EPA Water Quality Portal", "url": "https://www.epa.gov/waterdata/water-quality-data-download"}
+  ],
+  "notes": "Observation values and joined weather context are a clearly labelled demo fixture shaped like the public sources; they are not presented as live official measurements.",
+  "targets": {"sites": 3, "observation_vectors": 96, "documents": 6, "verified_findings": 5, "live_notes": 2, "seeded_conflicts": 1}
+}

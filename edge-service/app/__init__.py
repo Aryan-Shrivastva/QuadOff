@@ -1,0 +1,1 @@
+"""FieldNote local edge service."""
