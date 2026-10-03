@@ -97,7 +97,9 @@ class SyncCoordinator:
         for item in queue:
             if item["memory_id"] in open_conflict_memory_ids:
                 continue
-            payload = item["payload"]
+            # The point is acknowledged as synced only after the remote
+            # upsert succeeds, so keep the cloud payload truthful as well.
+            payload = {**item["payload"], "sync_state": "synced"}
             points.append(models.PointStruct(id=vectors.vector_id(payload["id"]), vector=embedder.encode(f"{payload['title']}\n{payload['text']}"), payload=payload))
         if points:
             client.upsert(self.collection, points=points, wait=True)

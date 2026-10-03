@@ -15,7 +15,8 @@ River Zone 3 before?”
    stays out of the sync queue.
 5. Capture or approve a second note with **Ready to sync**. The SQLite outbox
    shows one explicit update.
-6. Toggle **Online**, deliver it from Sync center, and show the acknowledgement.
+6. Toggle **Online**. Reconnection automatically flushes the approved outbox to
+   Qdrant Server; show the acknowledgement and the queue returning to zero.
 7. Open the seeded conflict through `/api/conflicts`; resolve local, remote, or
    merged content. Explain that no update silently overwrites another one.
 

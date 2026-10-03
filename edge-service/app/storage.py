@@ -159,6 +159,15 @@ class LocalStorage:
         self.db.commit()
         return int(cursor.lastrowid)
 
+    def refresh_pending_outbox(self, memory: Memory) -> int:
+        """Keep a queued payload aligned with local edits made before sync."""
+        cursor = self.db.execute(
+            "UPDATE outbox SET payload_json=? WHERE memory_id=? AND status='queued'",
+            (json.dumps(memory.model_dump()), memory.id),
+        )
+        self.db.commit()
+        return int(cursor.rowcount)
+
     def pending_outbox(self) -> list[dict[str, Any]]:
         rows = self.db.execute("SELECT * FROM outbox WHERE status = 'queued' ORDER BY id").fetchall()
         return [dict(row) | {"payload": json.loads(row["payload_json"])} for row in rows]

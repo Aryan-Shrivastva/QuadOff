@@ -91,6 +91,28 @@ class EdgeVectorStore:
             self._save_fallback()
         return point_id
 
+    def upsert_many(self, items: list[tuple[str, list[float], dict[str, Any]]]) -> None:
+        """Bulk-index records during startup reconciliation with one flush."""
+        if not items:
+            return
+        prepared = [
+            (self.vector_id(memory_id), vector, {**payload, "memory_id": memory_id})
+            for memory_id, vector, payload in items
+        ]
+        if self.shard is not None:
+            try:
+                points = [qdrant_edge.Point(point_id, vector, payload) for point_id, vector, payload in prepared]
+                self.shard.update(qdrant_edge.UpdateOperation.upsert_points(points))
+                self.shard.flush()
+                return
+            except Exception:
+                # Preserve the same durable fallback behavior as single-point
+                # writes if a native segment cannot accept the batch.
+                self.use_fallback()
+        for point_id, vector, payload in prepared:
+            self._vectors[point_id] = {"vector": vector, "payload": payload}
+        self._save_fallback()
+
     def use_fallback(self) -> None:
         """Switch to the durable JSON fallback when the embedded segment is unavailable."""
         if self.shard is not None:

@@ -125,15 +125,16 @@ def _ingest_external_snapshots(storage: LocalStorage, vectors: EdgeVectorStore, 
 def seed_once(storage: LocalStorage, vectors: EdgeVectorStore, embedder: LocalEmbedder, seed_dir: Path) -> None:
     seed_version = storage.get_meta("seed_version")
     if seed_version == "fieldnote-v6" and storage.memory_count() > 0:
-        # A shard can be moved or upgraded independently of SQLite. Only
-        # rebuild when it is completely empty: qdrant-edge's point count can
-        # legitimately lag SQLite while the shard is still searchable, and
-        # re-embedding thousands of cached records on every launch makes the
-        # offline demo feel unavailable. The SQLite/source-snapshot catalog is
-        # still canonical for document reading.
-        if vectors.count() == 0:
-            for existing in storage.list_memory():
-                vectors.upsert(existing.id, embedder.encode(f"{existing.title}\n{existing.text}"), existing.model_dump())
+        # SQLite is the catalog of records, while Edge is the searchable
+        # index. Reconcile whenever the point count is incomplete so a moved,
+        # upgraded, or interrupted shard cannot silently reduce offline
+        # retrieval coverage.
+        if vectors.count() != storage.memory_count():
+            batch = [
+                (existing.id, embedder.encode(f"{existing.title}\n{existing.text}"), existing.model_dump())
+                for existing in storage.list_memory()
+            ]
+            vectors.upsert_many(batch)
         return
 
     if seed_version == "fieldnote-v5" and storage.memory_count() > 0:

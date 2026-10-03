@@ -227,20 +227,28 @@ def document_detail(document_id: str) -> dict[str, Any]:
 def search(request: SearchRequest) -> dict[str, Any]:
     started = time.perf_counter()
     query_vector = embedder.encode(request.query, role="query")
+    online = storage.get_meta("connectivity", "online") == "online"
+    # A cloud source is only eligible while the device is connected. This is
+    # a server-side guard as well as a UI choice, so an offline map search can
+    # never accidentally make a remote request.
+    effective_source = "cloud" if request.source == "cloud" and online else "edge"
+    # Use a wider retrieval window when filtering by selected region or map
+    # bounds, so globally similar records do not crowd out local documents.
+    candidate_limit = max(request.limit * 20, 100) if request.site_id or request.area else max(request.limit * 5, 20)
     retrieval_origin = "Qdrant Edge"
-    if request.source == "cloud":
+    if effective_source == "cloud":
         try:
-            candidates = syncer.search_remote(query_vector, max(request.limit * 5, 20))
+            candidates = syncer.search_remote(query_vector, candidate_limit)
         except Exception:
             candidates = []
         if candidates:
             retrieval_origin = "Qdrant Server"
         else:
             # A local demo remains useful before CENTRAL_QDRANT_URL is configured.
-            candidates = vectors.search(query_vector, max(request.limit * 5, 20))
+            candidates = vectors.search(query_vector, candidate_limit)
             retrieval_origin = "Central demo · Edge fallback"
     else:
-        candidates = vectors.search(query_vector, max(request.limit * 5, 20))
+        candidates = vectors.search(query_vector, candidate_limit)
     combined: list[dict[str, Any]] = []
     seen: set[str] = set()
     for candidate in candidates:
@@ -283,12 +291,12 @@ def search(request: SearchRequest) -> dict[str, Any]:
     matches = combined[: request.limit]
     answer = reasoner.answer(request.query, matches, network_allowed=storage.get_meta("connectivity", "online") == "online")
     elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
-    storage.record_activity("Area search completed" if request.area else "Local search completed", f"{request.source} · {request.query[:60]} · {elapsed_ms} ms · {len(matches)} evidence matches", "search")
+    storage.record_activity("Area search completed" if request.area else "Local search completed", f"{effective_source} · {request.query[:60]} · {elapsed_ms} ms · {len(matches)} evidence matches", "search")
     return {
         "query": request.query,
         "matches": matches,
         "answer": answer,
-        "retrieval": {"origin": retrieval_origin, "offline": storage.get_meta("connectivity", "online") == "offline", "latency_ms": elapsed_ms, "mode": vectors.mode, "source": request.source, "area": request.area},
+        "retrieval": {"origin": retrieval_origin, "offline": not online, "latency_ms": elapsed_ms, "mode": vectors.mode, "source": effective_source, "area": request.area},
     }
 
 
@@ -421,6 +429,7 @@ def upload_observation_image(memory_id: str, upload: ImageUpload) -> dict[str, A
     updated = memory.model_copy(update={"metadata": metadata, "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
     storage.insert_memory(updated)
     vectors.upsert(updated.id, embedder.encode(f"{updated.title}\n{updated.text}"), updated.model_dump())
+    storage.refresh_pending_outbox(updated)
     storage.record_activity("Offline-capable image attached", f"{safe_name} · {memory_id}", "note")
     return {"item": updated.model_dump(), "image": image_meta, "stored_locally": True}
 
@@ -435,6 +444,11 @@ def upload_observation(memory_id: str) -> dict[str, Any]:
         vectors.upsert(memory.id, embedder.encode(f"{memory.title}\n{memory.text}"), memory.model_dump())
     if not any(entry["memory_id"] == memory_id for entry in storage.pending_outbox()):
         storage.enqueue(memory)
+    else:
+        # The note may have received images or other local metadata after it
+        # was first queued. Upload the current immutable copy, not the stale
+        # payload captured before those attachments were added.
+        storage.refresh_pending_outbox(memory)
     if storage.get_meta("connectivity", "online") != "online":
         return {"item": memory.model_dump(), "queued": True, "uploaded": False, "message": "New record queued locally; upload will resume when connectivity returns."}
     try:
@@ -464,7 +478,24 @@ def connectivity(update: ConnectivityUpdate) -> dict[str, Any]:
     next_state = "online" if update.online else "offline"
     storage.set_meta("connectivity", next_state)
     storage.record_activity("Connection restored" if update.online else "Offline mode enabled", "Central traffic is allowed" if update.online else "Qdrant Edge and SQLite remain active", "online" if update.online else "offline")
-    return {"connectivity": next_state, "offline_search_available": True}
+    # Reconnecting is also the synchronization trigger. The local outbox is
+    # durable, so a failed cloud request leaves every item queued for the next
+    # reconnect instead of making the researcher press a second sync button.
+    sync_result: dict[str, Any] | None = None
+    sync_error: str | None = None
+    if update.online and storage.pending_count() > 0:
+        try:
+            sync_result = syncer.sync(storage, vectors, embedder)
+        except Exception as exc:  # keep offline-first capture usable on failure
+            sync_error = str(exc)
+            storage.record_activity("Reconnect sync deferred", f"Central Qdrant unavailable: {sync_error[:160]}", "queued")
+    return {
+        "connectivity": next_state,
+        "offline_search_available": True,
+        "sync": sync_result,
+        "sync_error": sync_error,
+        "pending_sync": storage.pending_count(),
+    }
 
 
 @app.get("/api/sync/queue")

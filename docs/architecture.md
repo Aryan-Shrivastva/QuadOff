@@ -17,7 +17,7 @@ conflict without relying on a remote service.
 | `GET /api/memory` | Inspect local records and policy states |
 | `POST /api/notes` | Embed and index a new field observation locally |
 | `POST /api/notes/{id}/policy` | Explicitly keep local, request verification, or approve sync |
-| `POST /api/connectivity` | Set the device's demonstrable connectivity state |
+| `POST /api/connectivity` | Set the device's demonstrable connectivity state; reconnect automatically flushes the durable outbox |
 | `GET /api/sync/queue` | Inspect the SQLite outbox |
 | `POST /api/sync/run` | Deliver approved records and acknowledge them |
 | `GET /api/activity` | Inspect searchable local system activity |

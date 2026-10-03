@@ -54,10 +54,6 @@ const nav = [
   { id: 'home' as View, label: 'Home', icon: LayoutDashboard },
   { id: 'evidence' as View, label: 'Evidence Search', icon: Search },
   { id: 'observation' as View, label: 'Observation', icon: FileText },
-  { id: 'overview' as View, label: 'Page 1', icon: LayoutDashboard },
-  { id: 'search' as View, label: 'Page 2', icon: Search },
-  { id: 'memory' as View, label: 'Page 3', icon: FileText },
-  { id: 'sync' as View, label: 'Page 4', icon: RefreshCw },
 ]
 
 const manualLocations: FieldLocation[] = [
@@ -137,6 +133,7 @@ function App() {
   const [reasoningStatus, setReasoningStatus] = useState('')
   const [conflictCount, setConflictCount] = useState(1)
   const [selectedEvidence, setSelectedEvidence] = useState<any | null>(null)
+  const [documentBackView, setDocumentBackView] = useState<View>('home')
   const [availableLocations, setAvailableLocations] = useState<FieldLocation[]>(manualLocations)
   const [manualLocationId, setManualLocationId] = useState(manualLocations[0].id)
   const [observationCategory, setObservationCategory] = useState('Plants & vegetation')
@@ -298,7 +295,23 @@ function App() {
   function toggleConnectivity() {
     const next = connection === 'online' ? 'offline' : 'online'
     setConnection(next)
-    fetch(`${API}/api/connectivity`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ online: next === 'online' }) }).catch(() => undefined)
+    fetch(`${API}/api/connectivity`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ online: next === 'online' }) })
+      .then(async (response) => {
+        const payload = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(payload.detail ?? 'Connectivity update failed')
+        if (next === 'online') {
+          setSavedNote((payload.pending_sync ?? 0) > 0)
+          if (payload.sync?.delivered > 0) {
+            setUploadStatus(`Connection restored · ${payload.sync.delivered} queued record${payload.sync.delivered === 1 ? '' : 's'} uploaded to Qdrant`)
+          } else if (payload.sync_error) {
+            setUploadStatus('Connection restored · upload still queued until Qdrant is reachable')
+          }
+        }
+      })
+      .catch(() => {
+        setConnection(connection)
+        if (next === 'online') setUploadStatus('Reconnect could not be confirmed · local records remain queued')
+      })
   }
 
   function runSync() {
@@ -319,7 +332,9 @@ function App() {
 
   function runSearch() {
     setHasSearched(true)
-    fetch(`${API}/api/search`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query, site_id: filters.site ? 'river-zone-3' : undefined, limit: 6 }) })
+    setSearchMatches([])
+    setSearchAnswer('')
+    fetch(`${API}/api/search`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query, site_id: filters.site ? manualLocationId : undefined, limit: 6, source: 'edge' }) })
       .then((response) => response.ok ? response.json() : Promise.reject(new Error('search failed')))
       .then((payload) => {
         const mapped = payload.matches.map((match: { id: string, score: number, title: string, kind: string, text: string, citation: string }) => ({ id: match.id, score: match.score.toFixed(2), title: match.title, section: match.citation, kind: match.kind.replace('_', ' ').toUpperCase(), text: match.text, highlights: ['dissolved oxygen', 'turbidity', 'calibration', 'duplicate'] }))
@@ -331,12 +346,22 @@ function App() {
       .catch(() => undefined)
   }
 
+  function openEvidenceSearch() {
+    selectView('evidence')
+    // Prime the search page with the current region instead of showing stale
+    // results from whichever place was searched previously.
+    runSearch()
+  }
+
   function runAreaSearch(area: SearchArea) {
     const areaQuery = `Environmental evidence near ${area.center.lat.toFixed(3)}, ${area.center.lng.toFixed(3)}`
+    const searchSource = connection === 'online' ? 'cloud' : 'edge'
     setQuery(areaQuery)
     setView('search')
     setHasSearched(false)
-    fetch(`${API}/api/search`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: areaQuery, site_id: 'river-zone-3', limit: 6, source: 'cloud', area }) })
+    setSearchMatches([])
+    setSearchAnswer('')
+    fetch(`${API}/api/search`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: areaQuery, site_id: 'river-zone-3', limit: 6, source: searchSource, area }) })
       .then((response) => response.ok ? response.json() : Promise.reject(new Error('area search failed')))
       .then((payload) => {
         const mapped = payload.matches.map((match: { id: string, score: number, title: string, kind: string, text: string, citation: string }) => ({ id: match.id, score: match.score.toFixed(2), title: match.title, section: match.citation, kind: match.kind.replace('_', ' ').toUpperCase(), text: match.text, highlights: ['dissolved oxygen', 'turbidity', 'calibration', 'duplicate'] }))
@@ -351,10 +376,13 @@ function App() {
 
   function runManualAreaSearch(area: SearchArea) {
     const areaQuery = `Environmental evidence near ${area.center.lat.toFixed(3)}, ${area.center.lng.toFixed(3)}`
+    const searchSource = connection === 'online' ? 'cloud' : 'edge'
     setQuery(areaQuery)
     setView('evidence')
     setHasSearched(false)
-    fetch(`${API}/api/search`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: areaQuery, limit: 8, source: 'cloud', area }) })
+    setSearchMatches([])
+    setSearchAnswer('')
+    fetch(`${API}/api/search`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: areaQuery, site_id: manualLocationId, limit: 8, source: searchSource, area }) })
       .then((response) => response.ok ? response.json() : Promise.reject(new Error('area search failed')))
       .then((payload) => {
         const mapped = payload.matches.map((match: { id: string, score: number, title: string, kind: string, text: string, citation: string }) => ({ id: match.id, score: match.score.toFixed(2), title: match.title, section: match.citation, kind: match.kind.replace('_', ' ').toUpperCase(), text: match.text, highlights: ['dissolved oxygen', 'turbidity', 'calibration', 'duplicate'] }))
@@ -374,6 +402,7 @@ function App() {
       kind: document.kind.replace(/_/g, ' ').toUpperCase(),
     }
     setSelectedEvidence(preview)
+    setDocumentBackView('home')
     setQuery(document.title)
     setView('document')
     try {
@@ -388,6 +417,30 @@ function App() {
     } catch {
       // The preview still contains the source-linked record and remains
       // readable if the edge service is temporarily unavailable.
+    }
+  }
+
+  async function openSearchResult(result: any) {
+    const preview = {
+      ...result,
+      section: result.section ?? `${result.source ?? 'Source dataset'} · source-linked record`,
+      kind: String(result.kind ?? 'FIELD RECORD').replace(/_/g, ' ').toUpperCase(),
+    }
+    setSelectedEvidence(preview)
+    setDocumentBackView('evidence')
+    setView('document')
+    try {
+      const response = await fetch(`${API}/api/documents/${encodeURIComponent(result.id)}`)
+      if (!response.ok) throw new Error('document detail unavailable')
+      const detail = await response.json()
+      setSelectedEvidence({
+        ...detail,
+        section: detail.citation ?? preview.section,
+        kind: String(detail.kind ?? preview.kind).replace(/_/g, ' ').toUpperCase(),
+      })
+    } catch {
+      // Local observations may not have a public source snapshot. The
+      // result preview still opens as a readable document.
     }
   }
 
@@ -409,7 +462,7 @@ function App() {
         <nav>
           {nav.map((item) => {
             const Icon = item.icon
-            return <button key={item.id} className={`nav-item ${view === item.id ? 'active' : ''}`} onClick={() => selectView(item.id)}><Icon size={18} strokeWidth={1.8} /><span>{item.label}</span>{item.id === 'sync' && pendingCount > 0 && <b>{pendingCount}</b>}</button>
+            return <button key={item.id} className={`nav-item ${view === item.id ? 'active' : ''}`} onClick={() => item.id === 'evidence' ? openEvidenceSearch() : selectView(item.id)}><Icon size={18} strokeWidth={1.8} /><span>{item.label}</span>{item.id === 'sync' && pendingCount > 0 && <b>{pendingCount}</b>}</button>
           })}
         </nav>
         <div className="sidebar-bottom">
@@ -426,29 +479,24 @@ function App() {
 
       <main className="main">
         <header className="topbar">
-          <div className="page-context"><button className="icon-button menu-mobile" onClick={() => setMobileOpen(true)} aria-label="Open navigation"><Menu size={20} /></button><div className="brand-inline"><BrandMark /><small>RIVER ZONE 3 FIELD MISSION</small></div></div>
+          <div className="page-context"><button className="icon-button menu-mobile" onClick={() => setMobileOpen(true)} aria-label="Open navigation"><Menu size={20} /></button><div className="brand-inline"><BrandMark /></div></div>
           <div className="top-actions">
             <div className="device-signals"><button className="icon-button" aria-label="Satellite status"><Network size={17} /></button><button className="icon-button" aria-label="Local vector store"><Database size={17} /></button><button className="icon-button" aria-label="Mesh radio"><Cloud size={17} /></button></div>
             <button className={`connection-button ${connection}`} onClick={toggleConnectivity}><span className="status-dot" />{connection === 'online' ? 'Connected' : 'Offline'}<ChevronDown size={14} /></button>
             <button className="secondary-button compact" aria-label="Calibrate device"><Settings size={16} />Calibrate</button>
-            <button className="qdrant-button compact sync-lock" onClick={() => selectView('sync')}><ShieldCheck size={16} />Sync lock</button>
             <button className="secondary-button compact new-observation" onClick={() => startObservationFromEvidence()}><Plus size={17} />New observation</button>
             <span className="node-badge">H-03</span>
           </div>
         </header>
         <div className="module-nav" aria-label="FieldNote modules">
-          {nav.map((item) => { const Icon = item.icon; return <button key={item.id} className={view === item.id ? 'active' : ''} onClick={() => selectView(item.id)}><Icon size={15} /><span>{item.label}</span>{item.id === 'sync' && (pendingCount > 0 || conflictCount > 0) && <b>{pendingCount + conflictCount}</b>}</button> })}
+          {nav.map((item) => { const Icon = item.icon; return <button key={item.id} className={view === item.id ? 'active' : ''} onClick={() => item.id === 'evidence' ? openEvidenceSearch() : selectView(item.id)}><Icon size={15} /><span>{item.label}</span>{item.id === 'sync' && (pendingCount > 0 || conflictCount > 0) && <b>{pendingCount + conflictCount}</b>}</button> })}
         </div>
         <div className="content">
           <div className="view-transition" key={view}>
-            {view === 'home' && <HomePage locations={availableLocations} locationId={manualLocationId} setLocationId={setManualLocationId} onEvidenceSearch={() => selectView('evidence')} onSearchArea={runManualAreaSearch} onOpenRecord={openCatalogRecord} />}
-            {view === 'document' && <DocumentPage document={selectedEvidence} onBack={() => selectView('home')} onSearch={() => selectView('evidence')} onRelevant={() => startObservationFromEvidence(selectedEvidence)} />}
-            {view === 'evidence' && <EvidenceSearchPage query={query} setQuery={setQuery} onSearch={runSearch} results={searchMatches} answer={searchAnswer} latency={searchLatency} origin={searchOrigin} connection={connection} selected={selectedEvidence} onSelect={setSelectedEvidence} onRelevant={() => startObservationFromEvidence(selectedEvidence)} />}
+            {view === 'home' && <HomePage locations={availableLocations} locationId={manualLocationId} setLocationId={setManualLocationId} onEvidenceSearch={openEvidenceSearch} onSearchArea={runManualAreaSearch} onOpenRecord={openCatalogRecord} />}
+            {view === 'document' && <DocumentPage document={selectedEvidence} onBack={() => selectView(documentBackView)} onSearch={() => selectView('evidence')} onRelevant={() => startObservationFromEvidence(selectedEvidence)} />}
+            {view === 'evidence' && <EvidenceSearchPage query={query} setQuery={setQuery} onSearch={runSearch} results={searchMatches} answer={searchAnswer} latency={searchLatency} origin={searchOrigin} connection={connection} regionLabel={availableLocations.find((location) => location.id === manualLocationId)?.name ?? 'Selected region'} onOpenResult={openSearchResult} />}
             {view === 'observation' && <ObservationPage connection={connection} locations={availableLocations} locationId={manualLocationId} setLocationId={setManualLocationId} category={observationCategory} setCategory={setObservationCategory} query={query} selectedEvidence={selectedEvidence} note={observationNote} setNote={setObservationNote} evidence={qualitativeEvidence} setEvidence={setQualitativeEvidence} refined={refinedObservation} refining={refining} reasoningStatus={reasoningStatus} onRefine={refineObservation} images={observationImages} onImages={updateObservationImages} onSave={saveObservation} saved={savedObservation} status={observationStatus} uploadStatus={uploadStatus} onUpload={uploadObservation} />}
-            {view === 'overview' && <Overview connection={connection} pendingCount={pendingCount} setView={setView} onNewNote={() => selectView('memory')} onSearchArea={runAreaSearch} localVectors={localVectors} />}
-            {view === 'search' && <KnowledgeSearch query={query} setQuery={setQuery} hasSearched={hasSearched} onSearch={runSearch} filters={filters} setFilters={setFilters} connection={connection} results={searchMatches} answer={searchAnswer} latency={searchLatency} origin={searchOrigin} />}
-            {view === 'memory' && <MemoryInspector localVectors={localVectors} note={note} setNote={setNote} policy={notePolicy} setPolicy={setNotePolicy} onSave={createNote} />}
-            {view === 'sync' && <SyncCenter connection={connection} pendingCount={pendingCount} syncing={syncing} onSync={runSync} conflictCount={conflictCount} onResolveConflict={resolveConflict} />}
           </div>
         </div>
       </main>
@@ -653,15 +701,64 @@ function HomePage({ locations, locationId, setLocationId, onEvidenceSearch, onSe
   const toneForCategory = (category: string) => category.toLowerCase().includes('water') ? 'teal' : category.toLowerCase().includes('weather') ? 'orange' : category.toLowerCase().includes('terrain') || category.toLowerCase().includes('trail') ? 'blue' : category.toLowerCase().includes('protected') ? 'green' : 'violet'
 
   return <section className="new-page home-page">
-    <div className="new-page-intro"><div><p className="eyebrow">FIELDNOTE · MANUAL LOCATION MODE</p><h1>Choose where to wander.</h1><p className="lede">For today’s presentation, pick a research area manually. The app will search the environmental records inside a {radiusKm} km radius and keep working when the network disappears.</p></div><span className="demo-mode-pill"><span className="status-dot" />DEMO · COORDINATES SELECTED MANUALLY</span></div>
+    <div className="new-page-intro"><div><h1>Choose where to wander.</h1></div><span className="demo-mode-pill"><span className="status-dot" />DEMO · COORDINATES SELECTED MANUALLY</span></div>
     <section className="home-map-panel">
       <div className="new-panel-heading"><div><p className="eyebrow">01 · SEARCH AREA</p><h2>Research area</h2></div><span className="map-coordinate-badge">{selectedCoordinate.lat.toFixed(3)}° N · {Math.abs(selectedCoordinate.lng).toFixed(3)}° W</span></div>
       <div className="manual-location-controls"><label>Choose a low-connectivity place<select value={locationId} onChange={(event) => setLocationId(event.target.value)}>{locations.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.region}</option>)}</select></label></div>
       <LiveMap coordinate={selectedCoordinate} radiusKm={radiusKm} onCoordinateChange={setSelectedCoordinate} />
       <div className="home-map-footer"><div><strong>{location.name}</strong><span>{location.description}</span></div><button className="primary-button" onClick={searchArea}><Search size={16} />Search this area</button></div>
     </section>
-    <section className="records-section"><div className="new-panel-heading"><div><p className="eyebrow">02 · RECORDS AVAILABLE FOR THIS PLACE</p><h2>{location.name}</h2></div><button className="secondary-button" onClick={onEvidenceSearch}><Search size={15} />Open Evidence Search</button></div><p className="section-note">{documents.length >= 40 ? documents.length : 40} unique source-linked documents are available for this place. Select a document to read its dataset content; nothing is edited in the original record.</p><div className="catalog-grid">{documents.map((document) => { const category = String(document.metadata?.category ?? document.kind.replace(/_/g, ' ')); return <button type="button" className="catalog-card" key={document.id} onClick={() => onOpenRecord(document)} aria-label={`Open ${document.title}`}><div className={`catalog-icon ${toneForCategory(category)}`}><BookOpen size={17} /></div><div><span>{category}</span><h3>{document.title}</h3><p>{document.text.length > 170 ? `${document.text.slice(0, 170)}…` : document.text}</p><small>{document.source ?? 'Local source dataset'} · OPEN DOCUMENT <ChevronRight size={12} /></small></div></button> })}</div></section>
+    <section className="records-section"><div className="new-panel-heading"><div><p className="eyebrow">02 · RECORDS AVAILABLE FOR THIS PLACE</p><h2>{location.name}</h2></div><button className="secondary-button" onClick={onEvidenceSearch}><Search size={15} />Open Evidence Search</button></div><div className="catalog-grid">{documents.map((document) => { const category = String(document.metadata?.category ?? document.kind.replace(/_/g, ' ')); return <button type="button" className="catalog-card" key={document.id} onClick={() => onOpenRecord(document)} aria-label={`Open ${document.title}`}><div className={`catalog-icon ${toneForCategory(category)}`}><BookOpen size={17} /></div><div><span>{category}</span><h3>{document.title}</h3><p>{searchResultSummary(document.text)}</p></div></button> })}</div></section>
   </section>
+}
+
+function renderRecordFields(body: string) {
+  return <div className="document-field-list">{body.split('\n').map((line, index) => {
+    const value = line.trim()
+    if (!value) return null
+    const separator = value.indexOf(':')
+    const label = separator > 0 ? value.slice(0, separator).trim() : `Field ${index + 1}`
+    const fieldValue = separator > 0 ? value.slice(separator + 1).trim() : value
+    if (label.toLowerCase() === 'tags') {
+      try {
+        const tags = JSON.parse(fieldValue) as Record<string, unknown>
+        return <div className="document-field-row" key={line}><dt>{label}</dt><dd className="document-tag-list">{Object.entries(tags).map(([tag, tagValue]) => <span key={tag}><b>{tag}</b><em>{String(tagValue)}</em></span>)}</dd></div>
+      } catch {
+        // Keep an unexpected source value readable instead of exposing a raw
+        // object block or failing the whole document view.
+      }
+    }
+    return <div className="document-field-row" key={line}><dt>{label}</dt><dd>{fieldValue}</dd></div>
+  })}</div>
+}
+
+function documentFieldInterpretation(document: any) {
+  const source = String(document.source ?? '')
+  if (!/openstreetmap/i.test(source)) return ''
+  const text = String(document.text ?? '')
+  const name = text.match(/\nName:\s*([^\n]+)/i)?.[1]?.trim() ?? document.title
+  const tagsLine = text.match(/\nTags:\s*(\{[^\n]+\})/i)?.[1]
+  let tags: Record<string, unknown> = {}
+  try {
+    tags = tagsLine ? JSON.parse(tagsLine) as Record<string, unknown> : {}
+  } catch {
+    tags = {}
+  }
+  const featureType = String(tags.natural ?? tags.highway ?? tags.waterway ?? tags.landuse ?? tags.amenity ?? 'mapped landscape feature')
+  const elevation = tags.ele ? ` It is recorded at approximately ${String(tags.ele)} metres elevation.` : ''
+  const alternateName = tags['alt_name:en'] ? ` The alternate name is ${String(tags['alt_name:en'])}.` : ''
+  const prominence = tags.prominence ? ` The source lists ${String(tags.prominence)} metres of prominence.` : ''
+  const coordinate = text.match(/map center is ([^ ]+,\s*[^ ]+)/i)?.[1]
+  const area = document.metadata?.region ?? 'the selected research area'
+  return `This record identifies ${name} as a mapped ${featureType} in ${area}.${coordinate ? ` The mapped reference point is ${coordinate}.` : ''}${elevation}${prominence}${alternateName} The information is useful for planning a field visit, locating the feature on the ground, and comparing the mapped reference with current access, snow, vegetation, or surrounding terrain. Because this is a point or mapped geometry from OpenStreetMap, it should be treated as a reference rather than a current condition report. Verify the feature and its approach route in the field before recording a new observation.`
+}
+
+function cleanGeneratedLabel(value: string) {
+  return value
+    .replace(/\s*[·•]\s*(?:mapped feature|GBIF occurrence|hourly weather|weather day)\s*\d+\b/gi, '')
+    .replace(/\s+(?:mapped feature|GBIF occurrence|hourly weather|weather day)\s+\d+\b/gi, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim()
 }
 
 function renderDocumentText(text: string) {
@@ -672,9 +769,9 @@ function renderDocumentText(text: string) {
     const firstLine = lines[0].trim()
     if (firstLine.startsWith('# ') || firstLine.startsWith('## ')) {
       const isMainHeading = firstLine.startsWith('# ')
-      const heading = firstLine.slice(isMainHeading ? 2 : 3)
+      const heading = cleanGeneratedLabel(firstLine.slice(isMainHeading ? 2 : 3))
       const body = lines.slice(1).join('\n').trim()
-      return <div className="document-block" key={index}>{isMainHeading ? <h2>{heading}</h2> : <h3>{heading}</h3>}{body && <p>{body.split('\n').map((line, lineIndex) => <span key={lineIndex}>{line}{lineIndex < body.split('\n').length - 1 && <br />}</span>)}</p>}</div>
+      return <div className="document-block" key={index}>{isMainHeading ? <h2>{heading}</h2> : <h3>{heading}</h3>}{body && (/^record fields$/i.test(heading) ? renderRecordFields(body) : <p>{body.split('\n').map((line, lineIndex) => <span key={lineIndex}>{line}{lineIndex < body.split('\n').length - 1 && <br />}</span>)}</p>)}</div>
     }
     if (lines.every((line) => line.trim().startsWith('- '))) return <ul key={index}>{lines.map((line) => <li key={line}>{line.trim().slice(2)}</li>)}</ul>
     return <p key={index}>{lines.map((line, lineIndex) => <span key={lineIndex}>{line}{lineIndex < lines.length - 1 && <br />}</span>)}</p>
@@ -689,17 +786,18 @@ function DocumentPage({ document, onBack, onSearch, onRelevant }: { document: an
   const sections = Array.isArray(metadata.sections) ? metadata.sections : ['Summary', 'Field relevance', 'Source and provenance']
   return <section className="new-page document-page">
     <div className="document-toolbar"><button className="secondary-button document-back" onClick={onBack}>← Back to records</button><span className="search-runtime"><span className="live-dot" />SOURCE DOCUMENT · QDRANT EDGE</span></div>
-    <div className="new-page-intro"><div><p className="eyebrow">INDEXED FIELD BRIEF · {document.kind}</p><h1>{document.title}</h1><p className="lede">This is the complete source-linked field brief stored for this place. Its indexed record is read-only; your later observation will be saved as a separate copy.</p></div><span className="copy-protection"><ShieldCheck size={15} />ORIGINAL RECORD LOCKED</span></div>
+    <div className="new-page-intro"><div><p className="eyebrow">INDEXED FIELD BRIEF · {document.kind}</p><h1>{document.title}</h1></div><span className="copy-protection"><ShieldCheck size={15} />ORIGINAL RECORD LOCKED</span></div>
     <div className="document-facts"><div><span>DATASET</span><strong>{document.source ?? document.section}</strong></div><div><span>FIELD AREA</span><strong>{metadata.region ?? 'Selected research area'}</strong></div><div><span>COORDINATE</span><strong>{metadata.latitude !== undefined && metadata.longitude !== undefined ? `${Number(metadata.latitude).toFixed(4)}, ${Number(metadata.longitude).toFixed(4)}` : 'Attached to source record'}</strong></div><div><span>DOCUMENT</span><strong>{metadata.document_index && metadata.document_total ? `${metadata.document_index} of ${metadata.document_total}` : 'Source-linked'}</strong></div></div>
-    <div className="document-layout"><article className="document-content"><p className="eyebrow">DOCUMENT CONTENT</p><div className="document-rich-text">{renderDocumentText(document.text || metadata.document_heading || 'Field evidence brief')}</div><div className="document-outline"><p className="eyebrow">DOCUMENT SECTIONS</p><div>{sections.map((section: string) => <span key={section}>{section}</span>)}</div></div><div className="document-integrity"><ShieldCheck size={16} /><span>This source-linked record is read-only. Any observation you create will be saved as a separate copy.</span></div></article><aside className="document-actions"><div><p className="eyebrow">WHAT NEXT?</p><h2>Use this document</h2><p>Search for similar records or mark this source relevant to create a new field observation.</p></div><button className="secondary-button full" onClick={onSearch}><Search size={15} />Search related evidence</button><button className="primary-button full" onClick={onRelevant}><CheckCircle2 size={16} />Relevant · Create observation</button>{document.source_url && <a className="document-source-link" href={document.source_url} target="_blank" rel="noreferrer">Open source dataset <ArrowUpRight size={14} /></a>}</aside></div>
+    <div className="document-layout"><article className="document-content"><p className="eyebrow">DOCUMENT CONTENT</p><div className="document-rich-text">{renderDocumentText(document.text || metadata.document_heading || 'Field evidence brief')}</div>{documentFieldInterpretation(document) && <div className="document-interpretation"><p className="eyebrow">FIELD INTERPRETATION</p><p>{documentFieldInterpretation(document)}</p></div>}<div className="document-outline"><p className="eyebrow">DOCUMENT SECTIONS</p><div>{sections.map((section: string) => <span key={section}>{section}</span>)}</div></div><div className="document-integrity"><ShieldCheck size={16} /><span>This source-linked record is read-only. Any observation you create will be saved as a separate copy.</span></div></article><aside className="document-actions"><div><p className="eyebrow">WHAT NEXT?</p><h2>Use this document</h2><p>Search for similar records or mark this source relevant to create a new field observation.</p></div><button className="secondary-button full" onClick={onSearch}><Search size={15} />Search related evidence</button><button className="primary-button full" onClick={onRelevant}><CheckCircle2 size={16} />Relevant · Create observation</button>{document.source_url && <a className="document-source-link" href={document.source_url} target="_blank" rel="noreferrer">Open source dataset <ArrowUpRight size={14} /></a>}</aside></div>
   </section>
 }
 
-function EvidenceSearchPage({ query, setQuery, onSearch, results: searchResults, answer, latency, origin, connection, selected, onSelect, onRelevant }: { query: string, setQuery: (value: string) => void, onSearch: () => void, results: typeof results, answer: string, latency: number, origin: string, connection: Connection, selected: any | null, onSelect: (value: any) => void, onRelevant: () => void }) {
+function EvidenceSearchPage({ query, setQuery, onSearch, results: searchResults, answer, latency, origin, connection, regionLabel, onOpenResult }: { query: string, setQuery: (value: string) => void, onSearch: () => void, results: typeof results, answer: string, latency: number, origin: string, connection: Connection, regionLabel: string, onOpenResult: (value: any) => void }) {
+  const terms = searchTerms(query)
   return <section className="new-page evidence-page">
-    <div className="new-page-intro"><div><p className="eyebrow">EVIDENCE SEARCH · QDRANT EDGE</p><h1>Find the record behind the question.</h1><p className="lede">Search environmental records by meaning, then read the exact source context before turning it into a new observation.</p></div><span className="search-runtime"><span className="live-dot" />{origin} · {connection === 'offline' ? 'OFFLINE SAFE' : 'CONNECTED'}</span></div>
-    <section className="evidence-search-box"><Search size={20} /><input value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && onSearch()} aria-label="Search environmental evidence" placeholder="Ask about plants, animals, rivers, weather, or a place…" /><button className="primary-button" onClick={onSearch}>Search <ArrowUpRight size={15} /></button></section>
-    <div className="evidence-layout"><section className="evidence-results"><div className="result-count"><span>{searchResults.length} matching records</span><small>{latency} ms · {origin}</small></div>{searchResults.map((result, index) => <button className={`new-result-card ${selected?.title === result.title ? 'selected' : ''}`} key={`${result.title}-${index}`} onClick={() => onSelect(result)}><div className="new-result-score">{Math.round(Number(result.score) * 100)}%</div><div><span>{result.kind} · {result.section}</span><h2>{result.title}</h2><p>{highlight(result.text, result.highlights ?? [])}</p><small><ShieldCheck size={12} />Source retained · vector match {result.score}</small></div><ChevronRight size={17} /></button>)}</section><aside className="document-reader">{selected ? <><div className="reader-kicker"><FileText size={15} />SELECTED RECORD</div><h2>{selected.title}</h2><p className="reader-meta">{selected.section}</p><div className="reader-rule" /><p className="reader-body">{selected.text}</p><div className="reader-source"><span>Exact source context</span><strong>{selected.kind}</strong><small>Original record remains unchanged.</small></div><button className="primary-button full" onClick={onRelevant}><CheckCircle2 size={16} />Relevant · Create observation</button></> : <div className="reader-empty"><FileText size={30} /><h2>Select a record</h2><p>Click a matching record to read its exact content and decide whether it is relevant to what you found.</p></div>}</aside></div>{answer && <div className="new-answer"><WandSparkles size={16} /><span><strong>Local evidence summary</strong>{answer}</span></div>}
+    <div className="new-page-intro"><div><p className="eyebrow">EVIDENCE SEARCH · {regionLabel.toUpperCase()}</p><h1>Find the record behind the question.</h1></div><span className="search-runtime"><span className="live-dot" />{origin} · {connection === 'offline' ? 'OFFLINE SAFE' : 'CONNECTED'}</span></div>
+    <section className="evidence-search-box"><Search size={20} /><input value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => event.key === 'Enter' && onSearch()} aria-label="Search environmental evidence" placeholder="Type keywords: plants, animals, rivers, weather…" /><button className="primary-button" onClick={onSearch}>Search <ArrowUpRight size={15} /></button></section>
+    <div className="evidence-layout"><section className="evidence-results"><div className="result-count"><span>{searchResults.length} matching documents</span><small>{latency} ms · ranked by semantic + keyword match</small></div>{searchResults.length === 0 && <div className="reader-empty"><Search size={25} /><h2>Search this region</h2><p>Enter a few keywords to find the closest source documents for {regionLabel}.</p></div>}{searchResults.map((result, index) => <button type="button" className="new-result-card" key={`${result.title}-${index}`} onClick={() => onOpenResult(result)}><div className="new-result-score">{Math.round(Number(result.score) * 100)}%</div><div><span>{result.kind} · {result.section}</span><h2>{highlight(result.title, terms)}</h2><p>{highlight(searchResultSummary(result.text), terms)}</p><small><ShieldCheck size={12} />{Math.round(Number(result.score) * 100)}% match</small></div><ChevronRight size={17} /></button>)}</section><aside className="document-reader"><div className="reader-empty"><FileText size={30} /><h2>Open a matching document</h2><p>Click any result to open its complete source text, headings, fields, and provenance. The original record stays locked while you decide whether it is relevant.</p></div></aside></div>
   </section>
 }
 
@@ -712,12 +810,12 @@ function ObservationPage({ connection, locations, locationId, setLocationId, cat
       <div className="new-page-intro"><div><p className="eyebrow">OBSERVATION · NEW RECORD</p><h1>Turn evidence into a field note.</h1><p className="lede">This page creates a copy. The selected source record is never edited; your observation becomes its own new Qdrant point.</p></div><span className="copy-protection"><ShieldCheck size={15} />SOURCE RECORD LOCKED</span></div>
       <div className="observation-new-layout">
         <section className="observation-new-form">
-          <div className="new-form-section"><label>Location &amp; context</label><select value={locationId} onChange={(event) => setLocationId(event.target.value)}>{locations.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.region}</option>)}</select><small>{location.lat.toFixed(4)}, {location.lng.toFixed(4)} · manually selected for this demo</small></div>
+          <div className="new-form-section"><label>Location &amp; context</label><select value={locationId} onChange={(event) => setLocationId(event.target.value)}>{locations.map((item) => <option key={item.id} value={item.id}>{item.name} · {item.region}</option>)}</select></div>
           <div className="new-form-section"><label>Observed parameter &amp; category</label><select value={category} onChange={(event) => setCategory(event.target.value)}><option>Plants &amp; vegetation</option><option>Animals &amp; biodiversity</option><option>River &amp; water</option><option>Weather &amp; climate</option><option>Trail &amp; terrain</option><option>Other field evidence</option></select></div>
           <div className="new-form-section"><label>Words used during search</label><div className="locked-field"><Search size={15} />{query || 'No search phrase selected yet'}</div></div>
           <div className="new-form-section"><label htmlFor="new-observation">Observation</label><textarea id="new-observation" value={note} onChange={(event) => setNote(event.target.value)} rows={6} placeholder="Write what you saw, measured, or heard…" /></div>
-          <div className="new-form-section"><label htmlFor="qualitative-evidence">Qualitative evidence</label><textarea id="qualitative-evidence" value={evidence} onChange={(event) => setEvidence(event.target.value)} rows={5} placeholder="Add small words or a detailed description of the surrounding evidence…" /><button className="secondary-button refine-button" onClick={onRefine} disabled={refining || (!note.trim() && !evidence.trim())}><WandSparkles size={16} />{refining ? 'Refining…' : 'Refine with Gemma 4'}</button>{!refinerReady && <small className="refined-status">{reasoningStatus || 'The edge service is using its offline fallback; no hosted model is configured.'}</small>}{refined && <div className="refined-card"><span>{refinedLabel}</span><h3>{refined.title}</h3><p>{refined.summary}</p>{refined.model_status && <small className="refined-status">{refined.model_status}</small>}</div>}</div>
-          <div className="new-form-section"><label>Images · works online or offline</label><label className="upload-drop"><Upload size={18} /><span><strong>Upload field images</strong><small>Stored on this device first and attached to the new record.</small></span><input type="file" accept="image/*" multiple onChange={(event) => onImages(event.target.files)} /></label>{images.length > 0 && <div className="image-file-list">{images.map((image) => <span key={`${image.name}-${image.size}`}><FileImage size={14} />{image.name}</span>)}</div>}</div>
+          <div className="new-form-section"><label htmlFor="qualitative-evidence">Qualitative evidence</label><textarea id="qualitative-evidence" value={evidence} onChange={(event) => setEvidence(event.target.value)} rows={5} placeholder="Add small words or a detailed description of the surrounding evidence…" /><button className="secondary-button refine-button" onClick={onRefine} disabled={refining || (!note.trim() && !evidence.trim())}><WandSparkles size={16} />{refining ? 'Refining…' : 'Refine with Gemma 4'}</button>{refined && <div className="refined-card"><span>{refinedLabel}</span><h3>{refined.title}</h3><p>{refined.summary}</p>{refined.model_status && <small className="refined-status">{refined.model_status}</small>}</div>}</div>
+          <div className="new-form-section"><label>Images · works online or offline</label><label className="upload-drop"><Upload size={18} /><span><strong>Upload field images</strong></span><input type="file" accept="image/*" multiple onChange={(event) => onImages(event.target.files)} /></label>{images.length > 0 && <div className="image-file-list">{images.map((image) => <span key={`${image.name}-${image.size}`}><FileImage size={14} />{image.name}</span>)}</div>}</div>
         </section>
         <aside className="observation-new-side">
           <div className="source-card"><div className="reader-kicker"><BookOpen size={15} />SELECTED REPORT SUMMARY</div>{selectedEvidence ? <><h2>{selectedEvidence.title}</h2><p>{sourceReportSummary(selectedEvidence.text)}</p><small>Summary taken from the original report · source remains unchanged</small></> : <><h2>No source selected</h2><p>You can still write a standalone field observation, or go back to Evidence Search and mark a record relevant.</p></>}</div>
@@ -763,7 +861,7 @@ function Overview({ connection, pendingCount, setView, onNewNote, onSearchArea, 
 
   return <section className="mission-overview">
     <div className="mission-strip">
-      <div className="mission-strip-brand"><BrandMark /><div><span>RIVER ZONE 3 FIELD MISSION</span></div></div>
+      <div className="mission-strip-brand"><BrandMark /></div>
       <div className="mission-strip-status"><span className="status-dot" />{connection === 'online' ? 'CONNECTED' : 'OFFLINE'} <b>·</b> QDRANT EDGE ACTIVE</div>
       <div className="mission-strip-metrics"><span>SQLITE CACHE <b>94% FREE</b></span><span>NODE <b>STATION-03</b></span><span>BATTERY <b className="green-text">88%</b></span></div>
     </div>
@@ -801,7 +899,22 @@ function KnowledgeSearch({ query, setQuery, hasSearched, onSearch, filters, setF
   </>
 }
 
+function searchTerms(query: string) {
+  const ignored = new Set(['about', 'again', 'been', 'from', 'near', 'that', 'this', 'what', 'with', 'which', 'where'])
+  return Array.from(new Set(query.toLowerCase().split(/[^a-z0-9]+/).filter((term) => term.length > 2 && !ignored.has(term))))
+}
+
+function searchResultSummary(text: string) {
+  const summary = sourceReportSummary(text)
+  const compact = summary
+    .replace(/\s+/g, ' ')
+    .replace(/\b(?:Source|Original response|Dataset provenance)\s*:\s*https?:\/\/\S+/gi, '')
+    .trim()
+  return compact.length > 300 ? `${compact.slice(0, 300).trimEnd()}…` : compact
+}
+
 function highlight(text: string, terms: string[]) {
+  if (!text || terms.length === 0) return text
   const expression = new RegExp(`(${terms.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|')})`, 'gi')
   return text.split(expression).map((part, index) => terms.some((term) => term.toLowerCase() === part.toLowerCase()) ? <mark key={index}>{part}</mark> : part)
 }
