@@ -1,0 +1,218 @@
+# QuadOff FieldNote — Project Handoff
+
+This document is for anyone who clones or pulls this repository and needs to understand what the application does, how it is structured, and how Qdrant is used.
+
+## What this project is
+
+QuadOff FieldNote is an offline-first environmental field-research application. A researcher selects a low-connectivity location, searches the evidence available for that location, reads a source-linked record, and creates a new observation without changing the original record.
+
+The current presentation workflow has three visible pages:
+
+1. **Home** — choose a research place, move the live map coordinate, choose the search radius, and browse the place records.
+2. **Evidence Search** — search the selected place’s documents by keywords and meaning. Matching terms are highlighted and every result shows a match percentage.
+3. **Observation** — write a new observation, add qualitative evidence, refine it with the button labelled “Refine with Gemma 4”, attach images, save a new copy, and upload that copy to Qdrant when allowed.
+
+The original source record is immutable. A saved observation is always a new record.
+
+## Main technologies
+
+- React + TypeScript + Vite for the frontend.
+- FastAPI for the local edge service.
+- Qdrant Edge embedded shard for on-device vector search.
+- SQLite for canonical local records, policies, activity, conflicts, and the sync outbox.
+- Qdrant Server/Cloud through `qdrant-client` for optional central search and synchronization.
+- Leaflet with dark CARTO/OpenStreetMap tiles for the live map.
+- A deterministic local embedder and evidence-first summarizer by default.
+- Optional local EmbeddingGemma/Gemma 4 adapters and optional Gemini API summarization.
+
+## Repository map
+
+```text
+src/App.tsx                 React pages and application state
+src/styles.css              Visual system, responsive layout, animations
+edge-service/app/main.py    FastAPI routes and search/observation workflow
+edge-service/app/vector_store.py
+                            Qdrant Edge shard wrapper and local fallback
+edge-service/app/sync.py    Qdrant Server/Cloud sync and conflict handling
+edge-service/app/storage.py SQLite-backed local memory and outbox
+edge-service/app/seed.py    Initial dataset ingestion and Edge indexing
+public/field-locations.json 39 selectable research locations
+seed-data/external-snapshots Cached source/API documents for offline reading
+scripts/ingest_public_sources.py
+                            Refresh public source snapshots
+runtime/                    Local SQLite database and Qdrant Edge data
+```
+
+`runtime/` is local runtime state. It should not be treated as source code or copied into a fresh clone.
+
+## How Qdrant works here
+
+There are two Qdrant roles:
+
+### Qdrant Edge — local and offline
+
+The FastAPI service opens an embedded Qdrant Edge shard at:
+
+```text
+runtime/edge-shard/
+```
+
+Each local memory record is embedded and upserted into this shard. Evidence Search queries this local index, then combines the vector score with a lexical keyword score. This means searching still works when the device has no internet connection.
+
+SQLite remains the canonical catalog. At startup, the service reconciles the Edge point count against SQLite and reindexes missing points when necessary. If the native Edge dependency is unavailable, the service uses a durable local JSON vector fallback so the demo remains usable.
+
+### Qdrant Server/Cloud — optional central store
+
+Central Qdrant is used only when configured and when the device is online. The application uses the collection configured by `CENTRAL_QDRANT_COLLECTION`, normally:
+
+```text
+fieldnote_shared
+```
+
+The central connection is server-side. Never put a Qdrant API key in React code, `src/`, or a committed file.
+
+Create `edge-service/.env` from `edge-service/.env.example` and set:
+
+```dotenv
+CENTRAL_QDRANT_URL=https://your-cluster-endpoint
+CENTRAL_QDRANT_API_KEY=your-qdrant-api-key
+CENTRAL_QDRANT_COLLECTION=fieldnote_shared
+ALLOW_DEMO_CENTRAL=false
+```
+
+When the map area search requests `source: cloud` and the device is online, the service queries the configured central collection. When the device is offline, the backend forcibly changes the effective source to Edge so an offline action cannot accidentally make a network request.
+
+If central Qdrant is not configured, demo-central mode can acknowledge queued uploads locally. Set `ALLOW_DEMO_CENTRAL=false` when a real Qdrant connection is required.
+
+## Offline-first data flow
+
+1. A source document or field observation is stored in SQLite.
+2. Its vector is written to the local Qdrant Edge shard.
+3. An approved observation is placed in the SQLite outbox.
+4. Images are stored locally and their metadata is written back into the queued payload.
+5. While offline, the record stays searchable on the device.
+6. When connectivity is restored, `/api/connectivity` automatically attempts to flush the outbox.
+7. A successful Qdrant upsert marks the new copy as `synced`; failures leave it queued.
+8. Source records are never edited by this process.
+
+## Dataset and documents
+
+The selectable places are in `public/field-locations.json`. Each place has a cached evidence pack in `seed-data/external-snapshots/`.
+
+The public-source ingestion script uses sources such as:
+
+- GBIF occurrence data.
+- iNaturalist observations.
+- Open-Meteo weather forecasts.
+- OpenStreetMap Overpass map features.
+
+Run the ingestion script from the repository root when refreshing cached source data:
+
+```powershell
+python scripts/ingest_public_sources.py
+```
+
+The UI does not expose the raw upstream JSON response as the primary reading view. The document page presents readable headings, record fields, tag chips, provenance, and source-specific interpretation while retaining the original source text in the local snapshot.
+
+## Search behavior
+
+Evidence Search is scoped to the location selected on Home. The backend:
+
+- embeds the query;
+- retrieves a wider candidate window for a selected location or map bounds;
+- filters candidates by `site_id` and geographic bounds;
+- combines semantic similarity and lexical keyword overlap;
+- sorts by the combined score;
+- returns the result percentage and source-linked text.
+
+The frontend highlights the actual words entered by the researcher. Clicking a result opens the full document page. The document page has actions for searching related evidence or marking the record relevant for a new observation.
+
+## Observation and image flow
+
+The Observation page receives the selected report summary and the search phrase. The researcher can:
+
+- write an observation;
+- add qualitative evidence;
+- click **Refine with Gemma 4**;
+- upload images while online or offline;
+- save the work as a new immutable copy;
+- upload the new copy to Qdrant when connectivity is available.
+
+The label remains “Refine with Gemma 4” for the presentation. The default backend is deterministic and local. An online Gemini summarizer is optional:
+
+```dotenv
+REASONING_BACKEND=gemini-api
+GEMINI_API_KEY=your-gemini-api-key
+GEMINI_MODEL=gemini-3.8-flash
+```
+
+The key must remain in `edge-service/.env` and must never be committed. If the online model is unavailable, the evidence-first local fallback still produces a usable draft.
+
+## API route map
+
+Important local service routes:
+
+```text
+GET  /api/status
+GET  /api/documents?site_id=<place-id>
+GET  /api/documents/<document-id>
+POST /api/search
+POST /api/observations/refine
+POST /api/observations
+POST /api/observations/<id>/images
+POST /api/observations/<id>/upload
+POST /api/connectivity
+GET  /api/sync/queue
+POST /api/sync/run
+GET  /api/conflicts
+POST /api/conflicts/<id>/resolve
+```
+
+## Run after `git pull`
+
+From the repository root:
+
+### Start the backend
+
+```powershell
+python -m pip install -r edge-service/requirements.txt
+$env:PYTHONPATH = "$PWD/edge-service"
+python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
+```
+
+### Start the frontend in a second terminal
+
+```powershell
+npm install
+npm run dev -- --host 127.0.0.1
+```
+
+Open:
+
+```text
+http://127.0.0.1:5173
+```
+
+On Windows, `./run-local.ps1` starts both processes for a local demo.
+
+## Verification commands
+
+```powershell
+npm run build
+python -m compileall -q edge-service/app
+git diff --check
+```
+
+The service status endpoint shows whether the local Edge shard is active, how many local vectors exist, whether central Qdrant is configured, and how many records are waiting in the outbox:
+
+```text
+http://127.0.0.1:8000/api/status
+```
+
+## Security and operational notes
+
+- Do not commit Qdrant, Gemini, Google Maps, or other API keys.
+- Keep provider credentials in `edge-service/.env`, which is ignored by Git.
+- The frontend can run with the backend unavailable, but document search and Qdrant indexing require the edge service.
+- Cloud search and upload require connectivity; local search, capture, and image storage do not.
+- A new observation is a copy. It does not mutate the selected source document.

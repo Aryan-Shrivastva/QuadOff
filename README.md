@@ -1,5 +1,7 @@
 # QuadOff FieldNote
 
+For the current project handoff—including the three-page workflow, Qdrant Edge/Cloud setup, offline sync behavior, environment variables, and clone/run instructions—see [DID.README](./DID.README).
+
 Offline-first environmental research memory for a field researcher working around River Zone 3. FieldNote keeps a curated evidence pack on the device, searches it with an embedded Qdrant Edge shard, records observations locally, and synchronizes only approved findings when connectivity returns.
 
 The app is intentionally a field-intelligence workflow, not a generic chatbot:
