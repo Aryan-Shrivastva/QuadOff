@@ -148,6 +148,18 @@ GEMINI_MODEL=gemini-3.8-flash
 
 The key must remain in `edge-service/.env` and must never be committed. If the online model is unavailable, the evidence-first local fallback still produces a usable draft.
 
+### Offline model: Gemma 3 1B via a local server
+
+For a small offline model without loading weights inside the Python service, serve Gemma 3 1B with Ollama or llama.cpp's `llama-server` and point the edge service at it:
+
+```dotenv
+REASONING_BACKEND=ollama
+LOCAL_LLM_URL=http://127.0.0.1:11434/v1
+LOCAL_LLM_MODEL=gemma3:1b
+```
+
+`LOCAL_LLM_URL` must be a localhost address. A draft is accepted only if it has `TITLE:`/`SUMMARY:` lines and introduces no numbers absent from the researcher's text or the source; otherwise, or if the server is not running, the deterministic fallback is used and `used_model` is `false`.
+
 ## API route map
 
 Important local service routes:
