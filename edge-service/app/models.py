@@ -31,6 +31,40 @@ class NoteCreate(BaseModel):
     source: str = "Researcher field note"
 
 
+class ObservationCreate(BaseModel):
+    """Create a new observation copy; the selected source record is immutable."""
+
+    title: str = Field(default="Field observation", min_length=2, max_length=180)
+    observation: str = Field(default="", max_length=5000)
+    evidence: str = Field(default="", max_length=5000)
+    refined_summary: str = Field(default="", max_length=6000)
+    category: str = Field(default="Other field evidence", max_length=120)
+    site_id: str = "manual-research-area"
+    project_id: str = "clearwater-2026"
+    location: dict[str, Any] = Field(default_factory=dict)
+    source_memory_id: str | None = None
+    source_title: str | None = None
+    query: str = ""
+    policy: SyncState = "ready-to-sync"
+
+
+class ObservationRefine(BaseModel):
+    observation: str = Field(default="", max_length=5000)
+    evidence: str = Field(default="", max_length=5000)
+    query: str = Field(default="", max_length=500)
+    source_title: str = Field(default="Selected field evidence", max_length=180)
+    source_text: str = Field(default="", max_length=6000)
+    category: str = Field(default="Other field evidence", max_length=120)
+    location: str = Field(default="selected area", max_length=180)
+    network_allowed: bool = True
+
+
+class ImageUpload(BaseModel):
+    filename: str = Field(min_length=1, max_length=240)
+    mime_type: str = Field(default="application/octet-stream", max_length=120)
+    data_url: str = Field(min_length=20, max_length=15_000_000)
+
+
 class PolicyUpdate(BaseModel):
     policy: SyncState
 

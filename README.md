@@ -28,7 +28,17 @@ $env:PYTHONPATH = "$PWD/edge-service"
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
-The first start creates `runtime/fieldnote.sqlite3` and a persistent Qdrant Edge shard at `runtime/edge-shard`. The curated pack contains 108 indexed vectors, 3 monitoring sites, reports, procedures, verified findings, a cloud update fixture, and one explicit conflict fixture.
+The first start creates `runtime/fieldnote.sqlite3` and a persistent Qdrant Edge shard at `runtime/edge-shard`. The app also keeps the source snapshot catalog under `seed-data/external-snapshots` so document reading still works when the network is unavailable.
+
+### Ingest real public source records
+
+The place catalog is populated from public API responses rather than invented document text. From the repository root, run:
+
+```powershell
+python scripts/ingest_public_sources.py
+```
+
+The script fetches source responses from GBIF, iNaturalist, Open-Meteo, and OpenStreetMap Overpass, then writes one immutable JSON snapshot per place. It creates 30–40 source-derived records for each of the 39 low-connectivity places in `public/field-locations.json`; each record keeps the raw response payload, the complete upstream response, source URL, timestamp, coordinates, and provenance. No API key is required for these public endpoints. The UI's document reader presents readable source sections and detailed record context; implementation-level response payloads stay in the local snapshot for offline indexing rather than cluttering the researcher-facing page. If a public endpoint is temporarily unavailable, the last cached snapshot is retained for offline use.
 
 ### Area search
 
@@ -47,7 +57,20 @@ After the model weights are cached, copy the commented model profile from
 `edge-service/.env.example` into a local `.env`. The service will then use
 EmbeddingGemma for document/query vectors and Gemma 4 E2B for the cited local
 briefing. Without the weights, it remains fully runnable using its deterministic
-offline encoder and evidence-first fallback.
+offline encoder and evidence-first fallback; the Observation page labels that
+result as a local draft rather than pretending Gemma 4 ran. Gemma 4 E2B is
+loaded through Transformers' `AutoProcessor` + `AutoModelForMultimodalLM`
+adapter when the model is present locally; the model download is about 10.3 GB,
+so it is intentionally never triggered by a normal app start.
+
+### Optional online summarizer
+
+For an online presentation, the same evidence-first flow can use Gemini as an
+optional summarizer while Qdrant Edge still performs the local retrieval. Set
+`REASONING_BACKEND=gemini-api`, add `GEMINI_API_KEY` and `GEMINI_MODEL` to the
+backend `.env`, and restart the service. The key stays server-side. When the
+app is switched offline, the API call is skipped and the deterministic local
+draft remains available.
 
 ### 2. Start the React UI
 

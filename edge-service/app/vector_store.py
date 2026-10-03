@@ -75,13 +75,32 @@ class EdgeVectorStore:
         point_id = self.vector_id(memory_id)
         payload = {**payload, "memory_id": memory_id}
         if self.shard is not None:
-            point = qdrant_edge.Point(point_id, vector, payload)
-            self.shard.update(qdrant_edge.UpdateOperation.upsert_points([point]))
-            self.shard.flush()
+            try:
+                point = qdrant_edge.Point(point_id, vector, payload)
+                self.shard.update(qdrant_edge.UpdateOperation.upsert_points([point]))
+                self.shard.flush()
+            except Exception:
+                # Windows can keep a segment lock briefly after a previous demo
+                # process exits. Preserve the app's offline behavior by moving
+                # to the deterministic local shard instead of dropping a note.
+                self.use_fallback()
+                self._vectors[point_id] = {"vector": vector, "payload": payload}
+                self._save_fallback()
         else:
             self._vectors[point_id] = {"vector": vector, "payload": payload}
             self._save_fallback()
         return point_id
+
+    def use_fallback(self) -> None:
+        """Switch to the durable JSON fallback when the embedded segment is unavailable."""
+        if self.shard is not None:
+            try:
+                self.shard.close()
+            except Exception:
+                pass
+        self.shard = None
+        self.mode = "deterministic-fallback (edge segment unavailable)"
+        self._load_fallback()
 
     def search(self, vector: list[float], limit: int = 10) -> list[dict[str, Any]]:
         if self.shard is not None:

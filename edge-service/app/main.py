@@ -3,6 +3,10 @@ from __future__ import annotations
 import os
 import time
 import uuid
+import base64
+import binascii
+import re
+import json
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -12,7 +16,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
 from .embeddings import LocalEmbedder, lexical_score
-from .models import ConnectivityUpdate, ConflictResolve, Memory, NoteCreate, PolicyUpdate, SearchRequest
+from .models import ConnectivityUpdate, ConflictResolve, ImageUpload, Memory, NoteCreate, ObservationCreate, ObservationRefine, PolicyUpdate, SearchRequest
 from .reasoning import LocalReasoner
 from .seed import seed_once
 from .storage import LocalStorage
@@ -30,6 +34,7 @@ def resolve_path(value: str, default: Path) -> Path:
 
 runtime_dir = resolve_path(os.getenv("FIELDNOTE_DATA_DIR", "runtime"), ROOT / "runtime")
 seed_dir = resolve_path(os.getenv("FIELDNOTE_SEED_DIR", "seed-data"), ROOT / "seed-data")
+attachment_dir = runtime_dir / "observation-attachments"
 edge_dir = runtime_dir / "edge-shard"
 vector_size = int(os.getenv("EDGE_VECTOR_SIZE", "384"))
 storage = LocalStorage(runtime_dir / "fieldnote.sqlite3")
@@ -37,6 +42,15 @@ embedder = LocalEmbedder(vector_size)
 vectors = EdgeVectorStore(edge_dir, embedder.size)
 reasoner = LocalReasoner()
 syncer = SyncCoordinator(runtime_dir)
+
+
+def location_catalog() -> list[dict[str, Any]]:
+    path = ROOT / "public" / "field-locations.json"
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload if isinstance(payload, list) else []
+    except (OSError, json.JSONDecodeError):
+        return []
 
 
 @asynccontextmanager
@@ -101,6 +115,114 @@ def status() -> dict[str, Any]:
     }
 
 
+@app.get("/api/catalog")
+def catalog() -> dict[str, Any]:
+    """Return the curated public-source catalog used by the presentation flow."""
+    return {
+        "locations": location_catalog(),
+        "sources": [
+            {"category": "Biodiversity", "source": "GBIF Occurrence API", "url": "https://techdocs.gbif.org/en/openapi/v1/occurrence"},
+            {"category": "Water", "source": "USGS Water Data APIs", "url": "https://api.waterdata.usgs.gov/"},
+            {"category": "Weather", "source": "NOAA NCEI Climate Data Online", "url": "https://www.ncei.noaa.gov/cdo-web/webservices/v2"},
+            {"category": "Trails", "source": "National Park Service APIs", "url": "https://www.nps.gov/subjects/developer/api-documentation.htm"},
+            {"category": "Protected areas", "source": "Protected Planet WDPA", "url": "https://www.protectedplanet.net/en/thematic-areas/wdpa"},
+            {"category": "Terrain", "source": "USGS 3DEP", "url": "https://www.usgs.gov/3d-elevation-program/about-3dep-products-services"},
+        ],
+    }
+
+
+@app.get("/api/documents")
+def documents(site_id: str = Query(..., min_length=1), kind: str | None = None, limit: int = Query(default=40, ge=1, le=100)) -> dict[str, Any]:
+    """Return the exact source-linked documents for one selectable place."""
+    items = storage.list_memory(site_id=site_id, kind=kind)
+    external_items = [memory for memory in items if memory.metadata.get("source_snapshot")]
+    if external_items:
+        items = external_items
+    source_documents: dict[str, dict[str, Any]] = {}
+    snapshot_path = seed_dir / "external-snapshots" / f"{site_id}.json"
+    try:
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+        source_documents = {
+            f"snapshot-{site_id}-{item.get('id', '')}": item
+            for item in snapshot.get("documents", [])
+            if item.get("id")
+        }
+    except (OSError, json.JSONDecodeError):
+        source_documents = {}
+    documents = []
+    for memory in items:
+        if not memory.metadata.get("catalog"):
+            continue
+        metadata = {**memory.metadata}
+        source_document = source_documents.get(memory.id) or {}
+        item = memory.model_dump()
+        # The snapshot is the canonical readable copy. This lets refreshed
+        # source text appear immediately without a costly Edge re-embedding
+        # pass on every ingestion refresh.
+        if source_document:
+            item.update({
+                "title": source_document.get("title", item["title"]),
+                "text": source_document.get("text", item["text"]),
+                "source": source_document.get("source", item["source"]),
+                "source_url": source_document.get("source_url", item.get("source_url")),
+            })
+            metadata["sections"] = re.findall(r"^##\s+(.+)$", str(item["text"]), flags=re.MULTILINE)
+        documents.append({
+            **item,
+            "metadata": metadata,
+            "citation": f"{item['title']} · {item['source']}",
+        })
+        if len(documents) >= limit:
+            break
+    return {"documents": documents, "count": len(documents), "site_id": site_id}
+
+
+@app.get("/api/documents/{document_id}")
+def document_detail(document_id: str) -> dict[str, Any]:
+    """Return one source record plus its complete upstream API response.
+
+    The catalog endpoint intentionally stays light for the Home page. This
+    detail endpoint is fetched only after a researcher opens a record, so the
+    reader can show the full response without duplicating large payloads in
+    every catalog card.
+    """
+    memory = storage.get_memory(document_id)
+    if memory is None or not memory.metadata.get("source_snapshot"):
+        raise HTTPException(status_code=404, detail="Source document not found")
+
+    metadata = {**memory.metadata}
+    snapshot_path = seed_dir / "external-snapshots" / f"{memory.site_id}.json"
+    try:
+        snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        snapshot = {}
+
+    source_document = next(
+        (item for item in snapshot.get("documents", []) if f"snapshot-{memory.site_id}-{item.get('id', '')}" == memory.id),
+        None,
+    )
+    if source_document:
+        item = memory.model_dump()
+        item.update({
+            "title": source_document.get("title", item["title"]),
+            "text": source_document.get("text", item["text"]),
+            "source": source_document.get("source", item["source"]),
+            "source_url": source_document.get("source_url", item.get("source_url")),
+        })
+        metadata["sections"] = re.findall(r"^##\s+(.+)$", str(item["text"]), flags=re.MULTILINE)
+        response_key = str((source_document.get("metadata") or {}).get("response_key") or metadata.get("response_key") or "")
+        metadata["source_fetched_at"] = snapshot.get("fetched_at")
+        metadata["source_family"] = response_key or metadata.get("source_key") or "public-source"
+    else:
+        item = memory.model_dump()
+
+    return {
+        **item,
+        "metadata": metadata,
+        "citation": f"{item['title']} · {item['source']}",
+    }
+
+
 @app.post("/api/search")
 def search(request: SearchRequest) -> dict[str, Any]:
     started = time.perf_counter()
@@ -159,7 +281,7 @@ def search(request: SearchRequest) -> dict[str, Any]:
                 combined.append(_memory_result(memory, lexical, lexical))
     combined.sort(key=lambda item: item["score"], reverse=True)
     matches = combined[: request.limit]
-    answer = reasoner.answer(request.query, matches)
+    answer = reasoner.answer(request.query, matches, network_allowed=storage.get_meta("connectivity", "online") == "online")
     elapsed_ms = round((time.perf_counter() - started) * 1000, 1)
     storage.record_activity("Area search completed" if request.area else "Local search completed", f"{request.source} · {request.query[:60]} · {elapsed_ms} ms · {len(matches)} evidence matches", "search")
     return {
@@ -212,6 +334,115 @@ def create_note(note: NoteCreate) -> dict[str, Any]:
         storage.enqueue(item)
     storage.record_activity("Field note indexed locally", f"{item.title} · policy: {item.sync_state}", "queued" if item.sync_state == "ready-to-sync" else "note")
     return {"item": item.model_dump(), "queued": item.sync_state == "ready-to-sync"}
+
+
+@app.post("/api/observations/refine")
+def refine_observation(request: ObservationRefine) -> dict[str, Any]:
+    result = reasoner.refine_observation(
+        observation=request.observation,
+        evidence=request.evidence,
+        query=request.query,
+        source_title=request.source_title,
+        source_text=request.source_text,
+        category=request.category,
+        location=request.location,
+        network_allowed=request.network_allowed and storage.get_meta("connectivity", "online") == "online",
+    )
+    return result
+
+
+@app.post("/api/observations")
+def create_observation(observation: ObservationCreate) -> dict[str, Any]:
+    """Create an immutable new copy rather than editing the selected source."""
+    memory_id = f"observation-{uuid.uuid4().hex[:12]}"
+    now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    combined = "\n\n".join(part for part in (observation.refined_summary.strip(), observation.observation.strip(), observation.evidence.strip()) if part)
+    if not combined:
+        raise HTTPException(status_code=422, detail="Observation or qualitative evidence is required")
+    metadata = {
+        "captured_offline": storage.get_meta("connectivity", "online") == "offline",
+        "created_by": "researcher",
+        "category": observation.category,
+        "query": observation.query,
+        "location": observation.location,
+        "latitude": observation.location.get("latitude"),
+        "longitude": observation.location.get("longitude"),
+        "source_memory_id": observation.source_memory_id,
+        "source_title": observation.source_title,
+        "images": [],
+        "record_kind": "observation_copy",
+    }
+    item = Memory(
+        id=memory_id,
+        title=observation.title,
+        kind="field_observation",
+        text=combined,
+        site_id=observation.site_id,
+        project_id=observation.project_id,
+        source="Researcher observation · new copy",
+        source_url=None,
+        verified_status="needs-review",
+        privacy_level="project-private",
+        sync_state=observation.policy,
+        version=1,
+        vector_id=vectors.vector_id(memory_id),
+        created_at=now,
+        updated_at=now,
+        metadata=metadata,
+    )
+    storage.insert_memory(item)
+    vectors.upsert(item.id, embedder.encode(f"{item.title}\n{item.text}"), item.model_dump())
+    if item.sync_state == "ready-to-sync":
+        storage.enqueue(item)
+    storage.record_activity("New observation copy indexed", f"{item.title} · source remains immutable · {item.id}", "queued")
+    return {"item": item.model_dump(), "queued": item.sync_state == "ready-to-sync", "source_unchanged": True}
+
+
+@app.post("/api/observations/{memory_id}/images")
+def upload_observation_image(memory_id: str, upload: ImageUpload) -> dict[str, Any]:
+    memory = storage.get_memory(memory_id)
+    if not memory or memory.kind != "field_observation":
+        raise HTTPException(status_code=404, detail="Observation copy not found")
+    match = re.match(r"^data:(?P<mime>[^;]+);base64,(?P<data>.+)$", upload.data_url, re.DOTALL)
+    if not match:
+        raise HTTPException(status_code=422, detail="Image must be a base64 data URL")
+    try:
+        raw = base64.b64decode(match.group("data"), validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="Image data could not be decoded") from exc
+    safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", upload.filename)[:180] or "field-image"
+    destination = attachment_dir / memory_id
+    destination.mkdir(parents=True, exist_ok=True)
+    path = destination / safe_name
+    path.write_bytes(raw)
+    image_meta = {"filename": safe_name, "mime_type": upload.mime_type, "path": str(path.relative_to(ROOT)), "bytes": len(raw)}
+    metadata = dict(memory.metadata)
+    metadata["images"] = [*metadata.get("images", []), image_meta]
+    updated = memory.model_copy(update={"metadata": metadata, "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+    storage.insert_memory(updated)
+    vectors.upsert(updated.id, embedder.encode(f"{updated.title}\n{updated.text}"), updated.model_dump())
+    storage.record_activity("Offline-capable image attached", f"{safe_name} · {memory_id}", "note")
+    return {"item": updated.model_dump(), "image": image_meta, "stored_locally": True}
+
+
+@app.post("/api/observations/{memory_id}/upload")
+def upload_observation(memory_id: str) -> dict[str, Any]:
+    memory = storage.get_memory(memory_id)
+    if not memory or memory.kind != "field_observation":
+        raise HTTPException(status_code=404, detail="Observation copy not found")
+    if memory.sync_state != "ready-to-sync":
+        memory = storage.update_memory(memory_id, sync_state="ready-to-sync", version=memory.version + 1) or memory
+        vectors.upsert(memory.id, embedder.encode(f"{memory.title}\n{memory.text}"), memory.model_dump())
+    if not any(entry["memory_id"] == memory_id for entry in storage.pending_outbox()):
+        storage.enqueue(memory)
+    if storage.get_meta("connectivity", "online") != "online":
+        return {"item": memory.model_dump(), "queued": True, "uploaded": False, "message": "New record queued locally; upload will resume when connectivity returns."}
+    try:
+        result = syncer.sync(storage, vectors, embedder)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Qdrant upload failed: {exc}") from exc
+    latest = storage.get_memory(memory_id) or memory
+    return {"item": latest.model_dump(), "queued": storage.pending_count() > 0, "uploaded": latest.sync_state == "synced", "message": f"New record uploaded through {result.get('mode', syncer.mode)}; source record was not modified."}
 
 
 @app.post("/api/notes/{memory_id}/policy")

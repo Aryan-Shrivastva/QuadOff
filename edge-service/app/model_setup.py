@@ -38,9 +38,10 @@ def download(kind: str) -> int:
         print(f"  embedding dimension: {model.get_sentence_embedding_dimension()}")
     if kind in {"reasoning", "all"}:
         print(f"Downloading {REASONING_MODEL} through Transformers...")
-        from transformers import pipeline  # type: ignore
+        from transformers import AutoModelForMultimodalLM, AutoProcessor  # type: ignore
 
-        pipeline("text-generation", model=REASONING_MODEL, device="cpu")
+        AutoProcessor.from_pretrained(REASONING_MODEL)
+        AutoModelForMultimodalLM.from_pretrained(REASONING_MODEL, dtype="auto", device_map="auto")
     print("Model setup complete. Set the model backend variables before restarting the service.")
     return 0
 
